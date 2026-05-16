@@ -81,7 +81,10 @@ class ActionMetadataRecord:
 
 
 class GitHubClient:
+    """Small wrapper around `gh api` that counts API subprocess calls."""
+
     def __init__(self) -> None:
+        """Create a client with a zeroed call counter."""
         self.api_call_count = 0
 
     def api(
@@ -91,6 +94,7 @@ class GitHubClient:
         check: bool = True,
         input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        """Run `gh api` and return the completed process."""
         self.api_call_count += 1
         command = ["gh", "api", endpoint, *args]
         return subprocess.run(
@@ -103,16 +107,19 @@ class GitHubClient:
         )
 
     def api_json_lines(self, endpoint: str, *args: str) -> Iterable[Any]:
+        """Run `gh api --jq ... @json` and yield one decoded JSON object per line."""
         result = self.api(endpoint, *args)
         for line in result.stdout.splitlines():
             if line:
                 yield json.loads(line)
 
     def api_text(self, endpoint: str, *args: str) -> str:
+        """Run `gh api` and return stdout as text."""
         return self.api(endpoint, *args).stdout
 
 
 def require_gh() -> None:
+    """Fail early if the GitHub CLI is not available."""
     try:
         subprocess.run(
             ["gh", "--version"],
@@ -128,6 +135,7 @@ def require_gh() -> None:
 
 
 def setup_logging(progress: bool, log_level: str) -> None:
+    """Configure loguru for stderr progress logging."""
     logger.remove()
     if progress:
         logger.add(sys.stderr, level=log_level.upper(), colorize=True)
@@ -136,6 +144,7 @@ def setup_logging(progress: bool, log_level: str) -> None:
 
 
 def list_repos(client: GitHubClient, org: str, limit: int) -> list[Repo]:
+    """List repositories in an organization with basic update timestamps."""
     repos: list[Repo] = []
     page = 1
 
@@ -178,6 +187,7 @@ def list_repos(client: GitHubClient, org: str, limit: int) -> list[Repo]:
 
 
 def list_workflow_files(client: GitHubClient, repo: Repo) -> list[WorkflowFile]:
+    """Return YAML workflow files under `.github/workflows` for a repository."""
     result = client.api(
         f"/repos/{repo.name_with_owner}/contents/.github/workflows",
         "--jq",
@@ -200,6 +210,7 @@ def list_workflow_files(client: GitHubClient, repo: Repo) -> list[WorkflowFile]:
 def get_workflow_text(
     client: GitHubClient, repo: Repo, workflow_file: WorkflowFile
 ) -> str:
+    """Fetch raw workflow YAML text from GitHub."""
     return client.api_text(
         f"/repos/{repo.name_with_owner}/contents/{workflow_file.path}",
         "-H",
@@ -208,6 +219,7 @@ def get_workflow_text(
 
 
 def iter_uses(value: Any) -> Iterable[str]:
+    """Yield every string value found under a `uses` key in nested YAML data."""
     if isinstance(value, dict):
         uses = value.get("uses")
         if isinstance(uses, str):
@@ -220,12 +232,14 @@ def iter_uses(value: Any) -> Iterable[str]:
 
 
 def ref_from_uses(uses_target: str) -> str:
+    """Extract the ref after the final `@` in a GitHub Actions uses target."""
     if "@" not in uses_target:
         return ""
     return uses_target.rsplit("@", 1)[1]
 
 
 def action_repo_and_path_from_uses(uses_target: str) -> tuple[str, str]:
+    """Split a uses target into `owner/repo` and optional action subdirectory."""
     target_without_ref = uses_target.rsplit("@", 1)[0]
     parts = target_without_ref.split("/")
     if len(parts) < 2:
@@ -237,6 +251,7 @@ def action_repo_and_path_from_uses(uses_target: str) -> tuple[str, str]:
 
 
 def should_skip(uses_target: str, org: str) -> bool:
+    """Return true for local actions and same-org actions that are out of scope."""
     if uses_target.startswith(("./", "../")):
         return True
 
@@ -247,6 +262,7 @@ def should_skip(uses_target: str, org: str) -> bool:
 def parse_workflow(
     text: str, repo: Repo, workflow_file: WorkflowFile, org: str
 ) -> Iterable[UseRecord]:
+    """Parse one workflow file and yield external action uses records."""
     try:
         parsed = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -280,6 +296,7 @@ def scan(
     repo_limit: int,
     progress: bool,
 ) -> Iterable[UseRecord]:
+    """Scan repositories and workflow files for external action uses."""
     if progress:
         logger.info("listing repositories for {}", org)
     repos = list_repos(client, org, repo_limit)
@@ -333,6 +350,7 @@ def scan(
 
 
 def dedupe_scan_records(records: Iterable[UseRecord]) -> list[UseRecord]:
+    """Remove exact duplicate workflow-use rows while preserving first-seen order."""
     seen: set[tuple[str, str, str, str, str, str, str, str]] = set()
     deduped: list[UseRecord] = []
     for record in records:
@@ -354,6 +372,7 @@ def dedupe_scan_records(records: Iterable[UseRecord]) -> list[UseRecord]:
 
 
 def action_keys_from_records(records: Iterable[UseRecord]) -> list[ActionKey]:
+    """Return sorted unique action metadata lookup keys from use records."""
     keys = {
         ActionKey(
             uses_repo=record.uses_repo,
@@ -367,6 +386,7 @@ def action_keys_from_records(records: Iterable[UseRecord]) -> list[ActionKey]:
 
 
 def scan_record_to_row(record: UseRecord) -> dict[str, str]:
+    """Convert a workflow use record into a TSV row mapping."""
     return {
         "repo": record.repo,
         "repo_updated_at": record.repo_updated_at,
@@ -382,6 +402,7 @@ def scan_record_to_row(record: UseRecord) -> dict[str, str]:
 def metadata_records_by_key(
     records: Iterable[ActionMetadataRecord],
 ) -> dict[ActionKey, ActionMetadataRecord]:
+    """Index action metadata records by their action repo/path/ref key."""
     return {
         ActionKey(
             uses_repo=record.uses_repo,
@@ -397,6 +418,7 @@ def write_problem_report_from_records(
     metadata_by_key: dict[ActionKey, ActionMetadataRecord],
     include_header: bool,
 ) -> None:
+    """Write TSV rows for workflow uses whose action metadata has a problem."""
     writer = csv.DictWriter(
         sys.stdout,
         fieldnames=PROBLEM_REPORT_COLUMNS,
@@ -428,6 +450,7 @@ def write_problem_report_from_records(
 
 
 def action_metadata_paths(key: ActionKey) -> list[str]:
+    """Return possible action metadata paths for a root or subdirectory action."""
     base = key.uses_path.rstrip("/")
     if base:
         return [f"{base}/action.yml", f"{base}/action.yaml"]
@@ -437,6 +460,7 @@ def action_metadata_paths(key: ActionKey) -> list[str]:
 def fetch_action_metadata(
     client: GitHubClient, key: ActionKey
 ) -> tuple[str, dict[str, Any] | None, str]:
+    """Fetch and parse action.yml/action.yaml at a specific action ref."""
     quoted_ref = quote(key.ref, safe="")
     for metadata_path in action_metadata_paths(key):
         result = client.api(
@@ -461,6 +485,7 @@ def fetch_action_metadata(
 
 
 def classify_runtime(runs_using: str, metadata_problem: str) -> str:
+    """Classify action metadata into an audit problem code, if any."""
     if metadata_problem:
         return metadata_problem
     runtime = runs_using.lower()
@@ -475,6 +500,7 @@ def inspect_action(
     client: GitHubClient,
     key: ActionKey,
 ) -> ActionMetadataRecord:
+    """Inspect one unique action ref and report its runtime metadata."""
     metadata_path, metadata, metadata_problem = fetch_action_metadata(client, key)
     runs_using = ""
     if metadata:
@@ -502,6 +528,7 @@ def inspect_actions(
     keys: list[ActionKey],
     progress: bool,
 ) -> Iterable[ActionMetadataRecord]:
+    """Inspect many unique action refs, optionally with a progress bar."""
     if progress:
         logger.info("inspecting {} unique action refs", len(keys))
 
@@ -565,6 +592,7 @@ def main(
         help="Include a TSV header row.",
     ),
 ) -> None:
+    """Run the complete audit and write a TSV problem report to stdout."""
     if dry_run:
         typer.echo(f"organization: {org}")
         typer.echo(f"repo_limit: {repo_limit}")
