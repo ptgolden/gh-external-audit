@@ -33,8 +33,8 @@ SCAN_COLUMNS = [
 PROBLEM_REPORT_COLUMNS = [
     *SCAN_COLUMNS,
     "metadata_path",
-    "runs_using",
     "problem",
+    "detail",
 ]
 
 
@@ -70,14 +70,19 @@ class ActionKey:
 
 
 @dataclass(frozen=True)
+class ProblemRecord:
+    code: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
 class ActionMetadataRecord:
     uses_repo: str
     uses_path: str
     ref: str
     metadata_path: str
     metadata_found: bool
-    runs_using: str
-    problem: str
+    problems: tuple[ProblemRecord, ...]
 
 
 class GitHubClient:
@@ -418,7 +423,7 @@ def write_problem_report_from_records(
     metadata_by_key: dict[ActionKey, ActionMetadataRecord],
     include_header: bool,
 ) -> None:
-    """Write TSV rows for workflow uses whose action metadata has a problem."""
+    """Write one TSV row per (workflow use × action problem)."""
     writer = csv.DictWriter(
         sys.stdout,
         fieldnames=PROBLEM_REPORT_COLUMNS,
@@ -436,17 +441,18 @@ def write_problem_report_from_records(
             ref=record.ref,
         )
         metadata = metadata_by_key.get(key)
-        if not metadata or not metadata.problem:
+        if not metadata or not metadata.problems:
             continue
 
-        writer.writerow(
-            {
-                **scan_record_to_row(record),
-                "metadata_path": metadata.metadata_path,
-                "runs_using": metadata.runs_using,
-                "problem": metadata.problem,
-            }
-        )
+        for problem in metadata.problems:
+            writer.writerow(
+                {
+                    **scan_record_to_row(record),
+                    "metadata_path": metadata.metadata_path,
+                    "problem": problem.code,
+                    "detail": problem.detail,
+                }
+            )
 
 
 def action_metadata_paths(key: ActionKey) -> list[str]:
@@ -484,33 +490,41 @@ def fetch_action_metadata(
     return "", None, "metadata_missing"
 
 
-def classify_runtime(runs_using: str, metadata_problem: str) -> str:
-    """Classify action metadata into an audit problem code, if any."""
-    if metadata_problem:
-        return metadata_problem
-    runtime = runs_using.lower()
+def check_node_runtime(metadata: dict[str, Any]) -> Iterable[ProblemRecord]:
+    """Flag JavaScript actions running on Node older than version 24."""
+    runs = metadata.get("runs")
+    if not isinstance(runs, dict):
+        return
+    using = runs.get("using")
+    if not isinstance(using, str):
+        return
+    runtime = using.lower()
     if runtime.startswith("node"):
         version = runtime.removeprefix("node")
         if version.isdigit() and int(version) < 24:
-            return "node_lt_24"
-    return ""
+            yield ProblemRecord(code="node_lt_24", detail=using)
+
+
+ACTION_CHECKS = [check_node_runtime]
+
+
+def audit_action(metadata: dict[str, Any]) -> Iterable[ProblemRecord]:
+    """Run every action-level check on parsed action metadata."""
+    for check in ACTION_CHECKS:
+        yield from check(metadata)
 
 
 def inspect_action(
     client: GitHubClient,
     key: ActionKey,
 ) -> ActionMetadataRecord:
-    """Inspect one unique action ref and report its runtime metadata."""
-    metadata_path, metadata, metadata_problem = fetch_action_metadata(client, key)
-    runs_using = ""
+    """Inspect one unique action ref and report any problems found."""
+    metadata_path, metadata, fetch_problem = fetch_action_metadata(client, key)
+    problems: list[ProblemRecord] = []
+    if fetch_problem:
+        problems.append(ProblemRecord(code=fetch_problem))
     if metadata:
-        runs = metadata.get("runs")
-        if isinstance(runs, dict) and isinstance(runs.get("using"), str):
-            runs_using = runs["using"]
-
-    problem = classify_runtime(runs_using, metadata_problem)
-    if metadata and not runs_using:
-        problem = "runs_using_missing"
+        problems.extend(audit_action(metadata))
 
     return ActionMetadataRecord(
         uses_repo=key.uses_repo,
@@ -518,8 +532,7 @@ def inspect_action(
         ref=key.ref,
         metadata_path=metadata_path,
         metadata_found=metadata is not None,
-        runs_using=runs_using,
-        problem=problem,
+        problems=tuple(problems),
     )
 
 
