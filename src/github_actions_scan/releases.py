@@ -26,22 +26,32 @@ def fetch_tag_exists(client: GitHubClient, uses_repo: str, tag: str) -> bool:
     return result.returncode == 0
 
 
-def fetch_commit_sha(client: GitHubClient, uses_repo: str, ref: str) -> str:
-    """Resolve a ref (tag/branch/sha) to its underlying commit SHA, or "" on failure.
+def fetch_commit_info(client: GitHubClient, uses_repo: str, ref: str) -> tuple[str, str]:
+    """Resolve a ref (tag/branch/sha) to its (commit_sha, committer_date).
 
-    Uses the commits endpoint, which transparently follows annotated tags.
+    Returns ("", "") on 404 or malformed response. The commits endpoint
+    transparently follows annotated tags.
     """
     result = client.api(
         f"/repos/{uses_repo}/commits/{ref}",
         "-H",
         "Accept: application/vnd.github+json",
         "--jq",
-        ".sha",
+        "{sha, date: .commit.committer.date}",
         check=False,
     )
     if result.returncode != 0:
-        return ""
-    return result.stdout.strip()
+        return "", ""
+
+    try:
+        data = json.loads(result.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        return "", ""
+
+    if not isinstance(data, dict):
+        return "", ""
+
+    return data.get("sha") or "", data.get("date") or ""
 
 
 def fetch_latest_release(client: GitHubClient, uses_repo: str) -> LatestRelease | None:
@@ -76,7 +86,7 @@ def fetch_latest_release(client: GitHubClient, uses_repo: str) -> LatestRelease 
     else:
         latest_major_tag = None
 
-    latest_sha = fetch_commit_sha(client, uses_repo, tag_name)
+    latest_sha, _ = fetch_commit_info(client, uses_repo, tag_name)
 
     return LatestRelease(
         tag_name=tag_name,

@@ -12,7 +12,7 @@ from .models import (
     LatestRelease,
     Repo,
 )
-from .releases import fetch_latest_release
+from .releases import fetch_commit_info, fetch_latest_release
 from .scan import dedupe_scan_records, scan_repo_workflows
 
 
@@ -27,13 +27,17 @@ def is_hex_ref(ref: str) -> bool:
     return len(ref) >= 7 and all(c in "0123456789abcdef" for c in ref.lower())
 
 
-def compute_status(current_ref: str, latest: LatestRelease | None) -> str:
+def compute_status(
+    current_ref: str, current_sha: str, latest: LatestRelease | None
+) -> str:
     """Classify an action use as up-to-date, outdated, missing-release, or unknown.
 
     A current ref counts as up-to-date if it matches any of:
     - the exact release tag (e.g. `v6.0.2`)
     - the moving major-version tag (e.g. `v6`)
-    - a (possibly abbreviated) hex prefix of the release commit SHA
+    - the commit SHA the latest release points to (catches moving minor tags
+      like `v6.0` and any other ref that resolves to the same commit)
+    - a hex prefix of the latest commit SHA (handles abbreviated SHA pins)
     """
     if not current_ref:
         return STATUS_REF_UNKNOWN
@@ -42,6 +46,8 @@ def compute_status(current_ref: str, latest: LatestRelease | None) -> str:
     if current_ref == latest.tag_name:
         return STATUS_UP_TO_DATE
     if latest.latest_major_tag and current_ref == latest.latest_major_tag:
+        return STATUS_UP_TO_DATE
+    if current_sha and latest.latest_sha and current_sha == latest.latest_sha:
         return STATUS_UP_TO_DATE
     if (
         latest.latest_sha
@@ -57,51 +63,87 @@ def find_action_updates(
     repo: Repo,
     progress: bool,
 ) -> list[ActionUpdate]:
-    """Scan a repo's workflows and look up the latest release for each unique action."""
+    """Scan a repo's workflows and look up release + current-pin info per action.
+
+    Looks up the latest release once per unique action repo, and the current
+    pin's commit info once per unique (repo, ref) pair.
+    """
     records = dedupe_scan_records(scan_repo_workflows(client, repo))
 
     unique_repos = sorted({record.uses_repo for record in records if record.uses_repo})
+    unique_refs = sorted(
+        {(record.uses_repo, record.ref) for record in records if record.uses_repo and record.ref}
+    )
     if progress:
         logger.info(
-            "found {} workflow uses across {} unique action repos",
+            "found {} workflow uses; {} unique action repos; {} unique pinned refs",
             len(records),
             len(unique_repos),
+            len(unique_refs),
         )
 
-    progress_bar: tqdm[str] | None = None
-    repo_iterable: Iterable[str]
+    latest_by_repo: dict[str, LatestRelease | None] = {}
     if progress:
-        progress_bar = tqdm(
+        latest_bar: tqdm[str] | None = tqdm(
             unique_repos,
             desc="releases",
             unit="repo",
             file=sys.stderr,
             dynamic_ncols=True,
         )
-        progress_bar.set_postfix_str(f"gh api calls={client.api_call_count}")
-        repo_iterable = progress_bar
+        latest_bar.set_postfix_str(f"gh api calls={client.api_call_count}")
+        latest_iterable: Iterable[str] = latest_bar
     else:
-        repo_iterable = unique_repos
+        latest_bar = None
+        latest_iterable = unique_repos
 
-    latest_by_repo: dict[str, LatestRelease | None] = {}
-    for uses_repo in repo_iterable:
+    for uses_repo in latest_iterable:
         logger.debug("fetching latest release for {}", uses_repo)
         latest_by_repo[uses_repo] = fetch_latest_release(client, uses_repo)
-        if progress_bar:
-            progress_bar.set_postfix_str(f"gh api calls={client.api_call_count}")
+        if latest_bar:
+            latest_bar.set_postfix_str(f"gh api calls={client.api_call_count}")
 
-    return [
-        ActionUpdate(
-            workflow_path=record.workflow_path,
-            uses_target=record.uses_target,
-            uses_repo=record.uses_repo,
-            uses_path=record.uses_path,
-            current_ref=record.ref,
-            latest_release=latest_by_repo.get(record.uses_repo),
-            status=compute_status(record.ref, latest_by_repo.get(record.uses_repo)),
+    current_by_ref: dict[tuple[str, str], tuple[str, str]] = {}
+    if progress:
+        current_bar: tqdm[tuple[str, str]] | None = tqdm(
+            unique_refs,
+            desc="current refs",
+            unit="ref",
+            file=sys.stderr,
+            dynamic_ncols=True,
         )
-        for record in records
-    ]
+        current_bar.set_postfix_str(f"gh api calls={client.api_call_count}")
+        current_iterable: Iterable[tuple[str, str]] = current_bar
+    else:
+        current_bar = None
+        current_iterable = unique_refs
+
+    for uses_repo, ref in current_iterable:
+        logger.debug("resolving current ref {}@{}", uses_repo, ref)
+        current_by_ref[(uses_repo, ref)] = fetch_commit_info(client, uses_repo, ref)
+        if current_bar:
+            current_bar.set_postfix_str(f"gh api calls={client.api_call_count}")
+
+    updates: list[ActionUpdate] = []
+    for record in records:
+        current_sha, current_date = current_by_ref.get(
+            (record.uses_repo, record.ref), ("", "")
+        )
+        latest = latest_by_repo.get(record.uses_repo)
+        updates.append(
+            ActionUpdate(
+                workflow_path=record.workflow_path,
+                uses_target=record.uses_target,
+                uses_repo=record.uses_repo,
+                uses_path=record.uses_path,
+                current_ref=record.ref,
+                current_sha=current_sha,
+                current_published_at=current_date,
+                latest_release=latest,
+                status=compute_status(record.ref, current_sha, latest),
+            )
+        )
+    return updates
 
 
 def write_update_report(updates: Iterable[ActionUpdate], include_header: bool) -> None:
@@ -125,6 +167,8 @@ def write_update_report(updates: Iterable[ActionUpdate], include_header: bool) -
                 "uses_repo": update.uses_repo,
                 "uses_path": update.uses_path,
                 "current_ref": update.current_ref,
+                "current_sha": update.current_sha,
+                "current_published_at": update.current_published_at,
                 "latest_tag": latest.tag_name if latest else "",
                 "latest_major_tag": (latest.latest_major_tag if latest else "") or "",
                 "latest_sha": latest.latest_sha if latest else "",

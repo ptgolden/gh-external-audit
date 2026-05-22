@@ -25,6 +25,8 @@ UPDATE_REPORT_COLUMNS = [
     "uses_repo",
     "uses_path",
     "current_ref",
+    "current_sha",
+    "current_published_at",
     "latest_tag",
     "latest_major_tag",
     "latest_sha",
@@ -98,5 +100,7 @@ class ActionUpdate:
     uses_repo: str
     uses_path: str
     current_ref: str
+    current_sha: str
+    current_published_at: str
     latest_release: LatestRelease | None
     status: str

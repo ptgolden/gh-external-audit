@@ -135,6 +135,7 @@ def repo_command(
         typer.echo("  scan workflows")
         typer.echo("  deduplicate action refs")
         typer.echo("  fetch latest release per action repo")
+        typer.echo("  resolve current ref commit info per (repo, ref)")
         typer.echo("  write update report")
         return
 
