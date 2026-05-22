@@ -15,8 +15,10 @@ than version 24.
 ## Run
 
 ```sh
-uv run audit.py ORG > report.tsv
+uv run github-actions-scan ORG > report.tsv
 ```
+
+(Or equivalently `uv run python -m github_actions_scan ORG`.)
 
 Useful flags:
 
@@ -28,9 +30,10 @@ Useful flags:
 
 ## Checks
 
-All checks live in `audit.py`. Each check is a function that takes a parsed
-`action.yml` (a `dict`) and yields zero or more `ProblemRecord(code, detail)`
-values. The full list is `ACTION_CHECKS`, and `audit_action` fans out over it.
+All checks live in `src/github_actions_scan/checks.py`. Each check is a
+function that takes a parsed `action.yml` (a `dict`) and yields zero or more
+`ProblemRecord(code, detail)` values. The full list is `ACTION_CHECKS`, and
+`audit_action` fans out over it.
 
 To add a new check:
 
