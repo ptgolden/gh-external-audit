@@ -22,13 +22,32 @@ STATUS_NO_RELEASE = "no_release"
 STATUS_REF_UNKNOWN = "ref_unknown"
 
 
+def is_hex_ref(ref: str) -> bool:
+    """Return True for a ref that looks like a (possibly abbreviated) commit SHA."""
+    return len(ref) >= 7 and all(c in "0123456789abcdef" for c in ref.lower())
+
+
 def compute_status(current_ref: str, latest: LatestRelease | None) -> str:
-    """Classify an action use as up-to-date, outdated, missing-release, or unknown."""
+    """Classify an action use as up-to-date, outdated, missing-release, or unknown.
+
+    A current ref counts as up-to-date if it matches any of:
+    - the exact release tag (e.g. `v6.0.2`)
+    - the moving major-version tag (e.g. `v6`)
+    - a (possibly abbreviated) hex prefix of the release commit SHA
+    """
     if not current_ref:
         return STATUS_REF_UNKNOWN
     if latest is None:
         return STATUS_NO_RELEASE
     if current_ref == latest.tag_name:
+        return STATUS_UP_TO_DATE
+    if latest.latest_major_tag and current_ref == latest.latest_major_tag:
+        return STATUS_UP_TO_DATE
+    if (
+        latest.latest_sha
+        and is_hex_ref(current_ref)
+        and latest.latest_sha.lower().startswith(current_ref.lower())
+    ):
         return STATUS_UP_TO_DATE
     return STATUS_OUTDATED
 
@@ -107,6 +126,8 @@ def write_update_report(updates: Iterable[ActionUpdate], include_header: bool) -
                 "uses_path": update.uses_path,
                 "current_ref": update.current_ref,
                 "latest_tag": latest.tag_name if latest else "",
+                "latest_major_tag": (latest.latest_major_tag if latest else "") or "",
+                "latest_sha": latest.latest_sha if latest else "",
                 "latest_published_at": latest.published_at if latest else "",
                 "latest_url": latest.html_url if latest else "",
                 "status": update.status,

@@ -26,6 +26,8 @@ UPDATE_REPORT_COLUMNS = [
     "uses_path",
     "current_ref",
     "latest_tag",
+    "latest_major_tag",
+    "latest_sha",
     "latest_published_at",
     "latest_url",
     "status",
@@ -85,6 +87,8 @@ class LatestRelease:
     name: str
     published_at: str
     html_url: str
+    latest_major_tag: str | None = None
+    latest_sha: str = ""
 
 
 @dataclass(frozen=True)
