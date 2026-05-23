@@ -8,6 +8,12 @@ from loguru import logger
 from .actions import action_keys_from_records, inspect_actions, metadata_records_by_key
 from .clone import ensure_clone, resolve_here, working_tree_is_dirty
 from .editor import apply_decisions, diff, load_decisions
+from .git_ops import (
+    build_commit_message,
+    commit_workflows,
+    default_branch_name,
+    ensure_branch,
+)
 from .github import GitHubClient, require_gh
 from .models import Repo
 from .prompts import prompt_for_decisions
@@ -206,6 +212,14 @@ def update_command(
             "When set, applies them non-interactively and shows the diff."
         ),
     ),
+    branch: Optional[str] = typer.Option(
+        None,
+        "--branch",
+        help=(
+            "Branch to commit changes to. Defaults to "
+            "github-workflows-update/<today>."
+        ),
+    ),
     header: bool = typer.Option(
         True,
         "--header/--no-header",
@@ -317,6 +331,9 @@ def update_command(
                 logger.info("no decisions made; nothing to apply")
                 return
 
+        branch_name = branch or default_branch_name()
+        ensure_branch(clone_path, branch_name)
+
         edits = apply_decisions(clone_path, decisions, updates)
         if edits == 0:
             logger.info("no edits applied")
@@ -324,6 +341,12 @@ def update_command(
 
         print()
         print(diff(clone_path))
+
+        message = build_commit_message(decisions, updates)
+        if commit_workflows(clone_path, message):
+            logger.info("committed to branch {}", branch_name)
+        else:
+            logger.info("nothing to commit")
     finally:
         if progress:
             logger.info("gh api calls: {}", client.api_call_count)
