@@ -9,7 +9,6 @@ from .models import (
     CHOICE_SKIP,
     ActionUpdate,
     Decision,
-    LatestRelease,
 )
 
 
@@ -31,8 +30,10 @@ _HELP_TEXT = """
   (s) pin to SHA:        rewrite to use the immutable commit SHA. Most secure
                          (no supply-chain surprise from a moving tag).
   (n) leave as is:       keep the current pin unchanged.
-  (A) apply previous:    re-use the choice you made for this WORKFLOW@TAG combo
-                         on every remaining occurrence of it.
+
+  Uppercase variants (M/E/S/N) apply the same choice to this occurrence and
+  every remaining WORKFLOW@TAG match in the queue.
+
   (q) quit:              stop prompting; keep choices made so far.
   (?) help:              this message.
 """
@@ -64,25 +65,11 @@ def _short_sha(sha: str) -> str:
     return sha[:8] if sha else ""
 
 
-def _format_prior(prior_choice: str, latest: LatestRelease | None) -> str:
-    """Render the 'apply previous' summary text, e.g. 'exact: v6.0.2'."""
-    if prior_choice == CHOICE_SKIP or latest is None:
-        return prior_choice
-    if prior_choice == CHOICE_MAJOR and latest.latest_major_tag:
-        return f"{prior_choice}: {latest.latest_major_tag}"
-    if prior_choice == CHOICE_EXACT and latest.tag_name:
-        return f"{prior_choice}: {latest.tag_name}"
-    if prior_choice == CHOICE_SHA and latest.latest_sha:
-        return f"{prior_choice}: {_short_sha(latest.latest_sha)}"
-    return prior_choice
-
-
 def _print_prompt(
     update: ActionUpdate,
     clone_path: Path,
     position: int,
     total: int,
-    prior_choice: str | None,
     pending_matches: int,
 ) -> tuple[list[str], bool]:
     """Print the per-action prompt block.
@@ -126,28 +113,29 @@ def _print_prompt(
 
     print("  Options:")
     if major_tag:
-        print(f"    (m) pin to {major_tag}")
+        print(f"    (m) pin to major tag ({major_tag})")
     else:
         print(
             f"    (m) pin to major tag — not available for {update.uses_repo}"
         )
-    print(f"    (e) pin to {latest_tag}")
-    print(f"    (s) pin to {latest_sha_short}...")
+    print(f"    (e) pin to exact tag ({latest_tag})")
+    print(f"    (s) pin to SHA ({latest_sha_short})")
     print("    (n) leave as is")
-    if prior_choice is not None and pending_matches > 0:
-        prior_label = _format_prior(prior_choice, latest)
+    if pending_matches > 0:
         plural = "" if pending_matches == 1 else "s"
+        print()
         print(
-            f"    (A) apply previous choice [{prior_label}] to "
-            f"{pending_matches} more occurrence{plural}"
+            f"    Uppercase (M/E/S/N) applies to this and "
+            f"{pending_matches} more occurrence{plural} of {update.uses_target}."
         )
+        print()
     print("    (q) quit (keep changes made so far)")
     print("    (?) help")
     print()
 
     valid = ["m", "e", "s", "n", "q", "?"]
-    if prior_choice is not None and pending_matches > 0:
-        valid.append("A")
+    if pending_matches > 0:
+        valid.extend(["M", "E", "S", "N"])
     return valid, bool(major_tag)
 
 
@@ -156,12 +144,15 @@ def _ask_one(
     clone_path: Path,
     position: int,
     total: int,
-    prior_choice: str | None,
     pending_matches: int,
 ) -> str:
-    """Show the prompt and return a valid choice key (one of m/e/s/n/A/q)."""
+    """Show the prompt and return a valid choice key.
+
+    Return values: lowercase letter (single-target choice), uppercase letter
+    (bulk-apply to current + remaining matching), or "q" to quit.
+    """
     valid, major_available = _print_prompt(
-        update, clone_path, position, total, prior_choice, pending_matches
+        update, clone_path, position, total, pending_matches
     )
     while True:
         try:
@@ -176,9 +167,9 @@ def _ask_one(
         if raw not in valid:
             print(f"  Not a valid choice. Pick one of [{'/'.join(valid)}].")
             continue
-        if raw == "m" and not major_available:
+        if raw.lower() == "m" and not major_available:
             print(
-                f"  (m) is not available: {update.uses_repo} does not "
+                f"  ({raw}) is not available: {update.uses_repo} does not "
                 "publish a moving major-version tag."
             )
             continue
@@ -200,16 +191,16 @@ def prompt_for_decisions(
         return []
 
     plural = "" if len(outdated) == 1 else "s"
+    file_count = len({u.workflow_path for u in outdated})
+    file_plural = "" if file_count == 1 else "s"
     print(
         f"Found {len(outdated)} outdated action use{plural} across "
-        f"{len({u.workflow_path for u in outdated})} workflow file"
-        f"{'' if len({u.workflow_path for u in outdated}) == 1 else 's'}."
+        f"{file_count} workflow file{file_plural}."
     )
     if not typer.confirm("Proceed with interactive review?", default=True):
         return []
 
     decisions: list[Decision] = []
-    prior_by_target: dict[str, str] = {}
     pending: list[ActionUpdate] = list(outdated)
     completed = 0
     total = len(outdated)
@@ -217,7 +208,6 @@ def prompt_for_decisions(
     while pending:
         update = pending.pop(0)
         completed += 1
-        prior = prior_by_target.get(update.uses_target)
         pending_matches = sum(
             1 for u in pending if u.uses_target == update.uses_target
         )
@@ -227,7 +217,6 @@ def prompt_for_decisions(
             clone_path,
             position=completed,
             total=total,
-            prior_choice=prior,
             pending_matches=pending_matches,
         )
 
@@ -235,15 +224,17 @@ def prompt_for_decisions(
             print("  quitting; keeping decisions made so far.")
             break
 
-        if key == "A":
-            assert prior is not None  # menu only offered A when prior was set
-            decisions.append(
-                Decision(
-                    workflow_path=update.workflow_path,
-                    uses_target=update.uses_target,
-                    choice=prior,
-                )
+        choice_name = _CHOICE_FROM_KEY[key.lower()]
+        decisions.append(
+            Decision(
+                workflow_path=update.workflow_path,
+                uses_target=update.uses_target,
+                choice=choice_name,
             )
+        )
+
+        if key.isupper():
+            # Bulk-apply to all remaining matching uses_target
             applied_to = 1
             remaining: list[ActionUpdate] = []
             for u in pending:
@@ -252,7 +243,7 @@ def prompt_for_decisions(
                         Decision(
                             workflow_path=u.workflow_path,
                             uses_target=u.uses_target,
-                            choice=prior,
+                            choice=choice_name,
                         )
                     )
                     applied_to += 1
@@ -261,19 +252,8 @@ def prompt_for_decisions(
             pending = remaining
             plural = "" if applied_to == 1 else "s"
             print(
-                f"  applied [{_format_prior(prior, update.latest_release)}] to "
-                f"{applied_to} occurrence{plural}."
+                f"  applied [{choice_name}] to {applied_to} occurrence{plural} "
+                f"of {update.uses_target}."
             )
-            continue
-
-        choice_name = _CHOICE_FROM_KEY[key]
-        decisions.append(
-            Decision(
-                workflow_path=update.workflow_path,
-                uses_target=update.uses_target,
-                choice=choice_name,
-            )
-        )
-        prior_by_target[update.uses_target] = choice_name
 
     return decisions
