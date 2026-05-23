@@ -10,7 +10,10 @@ from .clone import ensure_clone, resolve_here, working_tree_is_dirty
 from .editor import apply_decisions, diff, load_decisions
 from .git_ops import (
     build_commit_message,
+    build_pr_body,
+    build_pr_title,
     commit_workflows,
+    create_pr,
     default_branch_name,
     ensure_branch,
 )
@@ -220,6 +223,11 @@ def update_command(
             "github-workflows-update/<today>."
         ),
     ),
+    no_pr: bool = typer.Option(
+        False,
+        "--no-pr",
+        help="Commit locally but skip the `gh pr create` step.",
+    ),
     header: bool = typer.Option(
         True,
         "--header/--no-header",
@@ -343,10 +351,35 @@ def update_command(
         print(diff(clone_path))
 
         message = build_commit_message(decisions, updates)
-        if commit_workflows(clone_path, message):
-            logger.info("committed to branch {}", branch_name)
-        else:
+        if not commit_workflows(clone_path, message):
             logger.info("nothing to commit")
+            return
+
+        logger.info("committed to branch {}", branch_name)
+
+        title = build_pr_title(decisions, updates)
+        body = build_pr_body(decisions, updates)
+
+        print()
+        print("Pull request preview:")
+        print(f"  Branch: {branch_name}")
+        print(f"  Title:  {title}")
+        print("  Body:")
+        for line in body.splitlines():
+            print(f"    {line}" if line else "")
+        print()
+
+        if no_pr:
+            logger.info("--no-pr set; skipping `gh pr create`")
+            return
+
+        if not typer.confirm("Create pull request?", default=True):
+            logger.info("PR creation skipped")
+            return
+
+        rc = create_pr(clone_path, title, body)
+        if rc != 0:
+            logger.error("gh pr create exited with code {}", rc)
     finally:
         if progress:
             logger.info("gh api calls: {}", client.api_call_count)

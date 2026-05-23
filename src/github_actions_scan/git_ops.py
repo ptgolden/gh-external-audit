@@ -116,3 +116,34 @@ def build_commit_message(
     if not bullets:
         return "Update GitHub Actions\n"
     return "Update GitHub Actions\n\n" + "\n".join(bullets) + "\n"
+
+
+def build_pr_title(
+    decisions: list[Decision], updates: list[ActionUpdate]
+) -> str:
+    return "Update GitHub Actions"
+
+
+def build_pr_body(
+    decisions: list[Decision], updates: list[ActionUpdate]
+) -> str:
+    bullets = summarize_changes(decisions, updates)
+    if not bullets:
+        return "(no changes)"
+    return (
+        "Updates from `github-actions-scan update`:\n\n"
+        + "\n".join(bullets)
+    )
+
+
+def create_pr(clone_path: Path, title: str, body: str) -> int:
+    """Run `gh pr create` with stdio inherited so gh can prompt interactively.
+
+    Returns gh's exit code. gh will offer to fork and push if the user lacks
+    write access to the upstream repo.
+    """
+    result = subprocess.run(
+        ["gh", "pr", "create", "--title", title, "--body", body],
+        cwd=clone_path,
+    )
+    return result.returncode
