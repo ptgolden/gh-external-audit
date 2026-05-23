@@ -110,7 +110,7 @@ def apply_decisions(
         edits = rewrite_workflow(workflow_file, decision.uses_target, new_target)
         if edits > 0:
             total_edits += edits
-            logger.info(
+            logger.debug(
                 "{}: {} -> {} ({} line{})",
                 decision.workflow_path,
                 decision.uses_target,
