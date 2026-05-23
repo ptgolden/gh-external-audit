@@ -104,3 +104,18 @@ class ActionUpdate:
     current_published_at: str
     latest_release: LatestRelease | None
     status: str
+
+
+CHOICE_MAJOR = "major"
+CHOICE_EXACT = "exact"
+CHOICE_SHA = "sha"
+CHOICE_SKIP = "skip"
+
+CHOICES = (CHOICE_MAJOR, CHOICE_EXACT, CHOICE_SHA, CHOICE_SKIP)
+
+
+@dataclass(frozen=True)
+class Decision:
+    workflow_path: str
+    uses_target: str
+    choice: str
