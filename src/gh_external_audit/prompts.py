@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import typer
@@ -55,22 +56,109 @@ def _find_line(file_path: Path, uses_target: str) -> int | None:
     return None
 
 
-def _print_yaml_context(file_path: Path, target_line: int, padding: int = 5) -> None:
-    """Render ±padding lines around target_line as a syntax-highlighted YAML block."""
-    lines = file_path.read_text().splitlines()
-    start = max(1, target_line - padding)
-    end = min(len(lines), target_line + padding)
-    snippet = "\n".join(lines[start - 1 : end])
-    syntax = Syntax(
-        snippet,
-        "yaml",
-        line_numbers=True,
-        start_line=start,
-        highlight_lines={target_line},
-        theme="ansi_dark",
-        background_color="default",
-    )
-    _console.print(syntax)
+def _indent_of(line: str) -> int:
+    """Return the number of leading spaces on a line (tab is treated as 0)."""
+    return len(line) - len(line.lstrip(" "))
+
+
+def _dash_col(line: str) -> int | None:
+    """Return the column of `- ` if the line is a YAML list-item header, else None."""
+    stripped = line.lstrip(" ")
+    if not stripped.startswith("- "):
+        return None
+    return len(line) - len(stripped)
+
+
+def _find_step_bounds(
+    lines: list[str], target_line: int
+) -> tuple[int, int, int] | None:
+    """Return 1-indexed (start, end, dash_col) for the YAML step containing target_line.
+
+    Uses pure indent heuristics: walk upward to find the most recent `- `
+    ancestor whose dash sits at less indent than the target, then walk
+    downward until the next sibling `- ` at the same dash position or any
+    line at less-or-equal indent ends the block. Returns None if the
+    structure can't be inferred (e.g. tab-indented YAML).
+    """
+    if not lines:
+        return None
+    target_idx = target_line - 1
+    if not (0 <= target_idx < len(lines)):
+        return None
+
+    target_indent = _indent_of(lines[target_idx])
+
+    target_dash = _dash_col(lines[target_idx])
+    if target_dash is not None:
+        step_start_idx = target_idx
+        step_dash_col = target_dash
+    else:
+        step_start_idx = -1
+        step_dash_col = -1
+        for i in range(target_idx - 1, -1, -1):
+            line = lines[i]
+            if not line.strip() or line.lstrip(" ").startswith("#"):
+                continue
+            line_indent = _indent_of(line)
+            dash = _dash_col(line)
+            if dash is not None and dash < target_indent:
+                step_start_idx = i
+                step_dash_col = dash
+                break
+            if line_indent < target_indent:
+                return None
+        if step_start_idx < 0:
+            return None
+
+    step_end_idx = len(lines) - 1
+    for i in range(step_start_idx + 1, len(lines)):
+        line = lines[i]
+        if not line.strip() or line.lstrip(" ").startswith("#"):
+            continue
+        line_indent = _indent_of(line)
+        dash = _dash_col(line)
+        if dash is not None and dash == step_dash_col:
+            step_end_idx = i - 1
+            break
+        if line_indent <= step_dash_col:
+            step_end_idx = i - 1
+            break
+
+    return step_start_idx + 1, step_end_idx + 1, step_dash_col
+
+
+_NAME_RE = re.compile(r"^name:\s*(.+?)\s*$")
+
+
+def _unquote(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def _step_name(
+    lines: list[str], step_start: int, step_end: int, dash_col: int
+) -> str | None:
+    """Return the value of the step's `name:` key if present."""
+    content_indent = dash_col + 2
+    for i in range(step_start - 1, step_end):
+        line = lines[i]
+        stripped = line.lstrip(" ")
+        if not stripped or stripped.startswith("#"):
+            continue
+        # The step header line, e.g. `- name: Step name`
+        if i == step_start - 1 and stripped.startswith("- "):
+            after_dash = stripped[2:]
+            match = _NAME_RE.match(after_dash)
+            if match:
+                return _unquote(match.group(1))
+            continue
+        # A body line of the step at content_indent
+        if _indent_of(line) == content_indent:
+            match = _NAME_RE.match(stripped)
+            if match:
+                return _unquote(match.group(1))
+    return None
 
 
 def _short_sha(sha: str) -> str:
@@ -101,10 +189,36 @@ def _print_prompt(
     )
     print(f"  File:   {file_label}")
     print(f"  Action: https://github.com/{update.uses_repo}")
-    print()
 
     if line_no:
-        _print_yaml_context(workflow_file, line_no)
+        text = workflow_file.read_text()
+        lines = text.splitlines()
+        bounds = _find_step_bounds(lines, line_no)
+        if bounds is None:
+            start = max(1, line_no - 5)
+            end = min(len(lines), line_no + 5)
+            step_name = None
+        else:
+            start, end, dash_col = bounds
+            step_name = _step_name(lines, start, end, dash_col)
+
+        if step_name:
+            print(f"  Step:   {step_name}")
+        print()
+
+        snippet = "\n".join(lines[start - 1 : end])
+        syntax = Syntax(
+            snippet,
+            "yaml",
+            line_numbers=True,
+            start_line=start,
+            highlight_lines={line_no},
+            theme="ansi_dark",
+            background_color="default",
+        )
+        _console.print(syntax)
+        print()
+    else:
         print()
 
     current_sha_short = _short_sha(update.current_sha) or "(unknown)"
