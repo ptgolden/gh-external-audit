@@ -1,6 +1,9 @@
 from pathlib import Path
 
 import typer
+from rich.console import Console
+from rich.rule import Rule
+from rich.syntax import Syntax
 
 from .models import (
     CHOICE_EXACT,
@@ -10,6 +13,9 @@ from .models import (
     ActionUpdate,
     Decision,
 )
+
+
+_console = Console()
 
 
 STATUS_OUTDATED = "outdated"
@@ -49,16 +55,22 @@ def _find_line(file_path: Path, uses_target: str) -> int | None:
     return None
 
 
-def _context_lines(file_path: Path, target_line: int, padding: int = 5) -> list[str]:
-    """Return formatted ±padding lines around target_line (1-indexed) with line numbers."""
+def _print_yaml_context(file_path: Path, target_line: int, padding: int = 5) -> None:
+    """Render ±padding lines around target_line as a syntax-highlighted YAML block."""
     lines = file_path.read_text().splitlines()
     start = max(1, target_line - padding)
     end = min(len(lines), target_line + padding)
-    out = []
-    for i in range(start, end + 1):
-        marker = ">" if i == target_line else " "
-        out.append(f"  {marker} {i:>4}│ {lines[i - 1]}")
-    return out
+    snippet = "\n".join(lines[start - 1 : end])
+    syntax = Syntax(
+        snippet,
+        "yaml",
+        line_numbers=True,
+        start_line=start,
+        highlight_lines={target_line},
+        theme="ansi_dark",
+        background_color="default",
+    )
+    _console.print(syntax)
 
 
 def _short_sha(sha: str) -> str:
@@ -81,17 +93,18 @@ def _print_prompt(
     latest = update.latest_release
 
     print()
-    print(f"[{position}/{total}] {update.uses_target}")
+    _console.print(
+        Rule(f"[{position}/{total}] {update.uses_target}", style="cyan", align="left")
+    )
     file_label = (
         f"{workflow_file}:{line_no}" if line_no else str(workflow_file)
     )
-    print(f"      File:   {file_label}")
-    print(f"      Action: https://github.com/{update.uses_repo}")
+    print(f"  File:   {file_label}")
+    print(f"  Action: https://github.com/{update.uses_repo}")
     print()
 
     if line_no:
-        for line in _context_lines(workflow_file, line_no):
-            print(line)
+        _print_yaml_context(workflow_file, line_no)
         print()
 
     current_sha_short = _short_sha(update.current_sha) or "(unknown)"
