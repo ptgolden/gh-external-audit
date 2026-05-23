@@ -1,6 +1,8 @@
+import json
 import subprocess
 from pathlib import Path
 
+import typer
 from loguru import logger
 
 from .models import (
@@ -8,6 +10,7 @@ from .models import (
     CHOICE_MAJOR,
     CHOICE_SHA,
     CHOICE_SKIP,
+    CHOICES,
     ActionUpdate,
     Decision,
 )
@@ -117,6 +120,61 @@ def apply_decisions(
             )
 
     return total_edits
+
+
+def load_decisions(path: Path) -> list[Decision]:
+    """Read a JSON file of decision records.
+
+    Expected shape: a JSON array of objects, each with `workflow_path`,
+    `uses_target`, and `choice` (one of major/exact/sha/skip).
+    """
+    try:
+        raw = path.read_text()
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(f"decisions file not found: {path}") from exc
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter(
+            f"decisions file is not valid JSON ({path}): {exc}"
+        ) from exc
+
+    if not isinstance(data, list):
+        raise typer.BadParameter(
+            f"decisions file must be a JSON array of objects ({path})"
+        )
+
+    decisions: list[Decision] = []
+    for i, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            raise typer.BadParameter(
+                f"decisions[{i}] is not an object in {path}"
+            )
+        try:
+            workflow_path = entry["workflow_path"]
+            uses_target = entry["uses_target"]
+            choice = entry["choice"]
+        except KeyError as exc:
+            raise typer.BadParameter(
+                f"decisions[{i}] in {path} is missing key {exc}"
+            ) from exc
+
+        if choice not in CHOICES:
+            raise typer.BadParameter(
+                f"decisions[{i}].choice = {choice!r} in {path}; "
+                f"must be one of {sorted(CHOICES)}"
+            )
+
+        decisions.append(
+            Decision(
+                workflow_path=str(workflow_path),
+                uses_target=str(uses_target),
+                choice=str(choice),
+            )
+        )
+
+    return decisions
 
 
 def diff(clone_path: Path, paths: list[str] | None = None) -> str:

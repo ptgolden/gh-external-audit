@@ -7,7 +7,7 @@ from loguru import logger
 
 from .actions import action_keys_from_records, inspect_actions, metadata_records_by_key
 from .clone import ensure_clone, resolve_here, working_tree_is_dirty
-from .editor import apply_decisions, diff
+from .editor import apply_decisions, diff, load_decisions
 from .github import GitHubClient, require_gh
 from .models import Repo
 from .prompts import prompt_for_decisions
@@ -190,6 +190,27 @@ def update_command(
         "--force-reclone",
         help="Delete any existing clone before fetching. Ignored with --here.",
     ),
+    emit: bool = typer.Option(
+        False,
+        "--emit",
+        help=(
+            "Print the action-update TSV (same shape as `repo`) and exit. "
+            "Use this to feed an agent that will produce a decisions file."
+        ),
+    ),
+    decisions_file: Optional[Path] = typer.Option(
+        None,
+        "--decisions",
+        help=(
+            "Path to a JSON file of pre-computed Decision records. "
+            "When set, applies them non-interactively and shows the diff."
+        ),
+    ),
+    header: bool = typer.Option(
+        True,
+        "--header/--no-header",
+        help="Include a TSV header row in --emit output.",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -206,13 +227,22 @@ def update_command(
         help="Log level for stderr progress logs.",
     ),
 ) -> None:
-    """Interactively update GitHub Actions used in REPO's workflows.
+    """Update GitHub Actions used in REPO's workflows.
 
-    Sparse-clones the target (or uses cwd with --here), looks up the latest
-    release for each external action, and walks you through every outdated
-    use with `git add -p`-style prompts. Edits are written back to the
-    workflow files; review with `git diff` afterward.
+    Three modes:
+    - default: walk every outdated action with `git add -p`-style prompts,
+      apply choices to the workflow files, print the diff.
+    - --emit: print the action-update TSV (same shape as `repo`) and exit;
+      meant to feed an agent that produces a decisions file.
+    - --decisions FILE: apply pre-computed decisions from a JSON file
+      non-interactively, then print the diff.
+
+    Sparse-clones the target into `./working/OWNER/REPO/`, or uses cwd with
+    --here.
     """
+    if emit and decisions_file is not None:
+        raise typer.BadParameter("--emit and --decisions are mutually exclusive")
+
     setup_logging(progress, log_level)
 
     cwd = Path.cwd()
@@ -233,19 +263,36 @@ def update_command(
         else:
             clone_path = ensure_clone(resolved_repo, work_dir, force_reclone)
 
+    if emit:
+        mode = "emit"
+    elif decisions_file is not None:
+        mode = "apply-decisions"
+    else:
+        mode = "interactive"
+
     if dry_run:
         typer.echo(f"repo: {resolved_repo}")
         typer.echo(f"clone_path: {clone_path}")
         typer.echo(f"here: {here}")
         typer.echo(f"force_reclone: {force_reclone}")
+        typer.echo(f"mode: {mode}")
+        if mode == "apply-decisions":
+            typer.echo(f"decisions_file: {decisions_file}")
         typer.echo("planned steps:")
         typer.echo("  ensure clone (or use cwd)")
         typer.echo("  scan local workflows")
         typer.echo("  fetch latest release per action repo")
         typer.echo("  resolve current ref commit info per (repo, ref)")
-        typer.echo("  prompt interactively for each outdated action")
-        typer.echo("  apply decisions to workflow files")
-        typer.echo("  show diff")
+        if mode == "emit":
+            typer.echo("  write TSV to stdout")
+        elif mode == "apply-decisions":
+            typer.echo("  load decisions from file")
+            typer.echo("  apply decisions to workflow files")
+            typer.echo("  show diff")
+        else:
+            typer.echo("  prompt interactively for each outdated action")
+            typer.echo("  apply decisions to workflow files")
+            typer.echo("  show diff")
         return
 
     require_gh()
@@ -256,10 +303,19 @@ def update_command(
         if progress:
             logger.info("computed {} action update rows", len(updates))
 
-        decisions = prompt_for_decisions(clone_path, updates)
-        if not decisions:
-            logger.info("no decisions made; nothing to apply")
+        if mode == "emit":
+            write_update_report(updates, include_header=header)
             return
+
+        if mode == "apply-decisions":
+            assert decisions_file is not None
+            decisions = load_decisions(decisions_file)
+            logger.info("loaded {} decisions from {}", len(decisions), decisions_file)
+        else:
+            decisions = prompt_for_decisions(clone_path, updates)
+            if not decisions:
+                logger.info("no decisions made; nothing to apply")
+                return
 
         edits = apply_decisions(clone_path, decisions, updates)
         if edits == 0:
