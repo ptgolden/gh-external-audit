@@ -106,20 +106,23 @@ def summarize_changes(
     return bullets
 
 
+_TITLE = "Update external GitHub workflows"
+
+
 def build_commit_message(
     decisions: list[Decision], updates: list[ActionUpdate]
 ) -> str:
     """Build the commit message body from the applied decisions."""
     bullets = summarize_changes(decisions, updates)
     if not bullets:
-        return "Update GitHub Actions\n"
-    return "Update GitHub Actions\n\n" + "\n".join(bullets) + "\n"
+        return f"{_TITLE}\n"
+    return f"{_TITLE}\n\n" + "\n".join(bullets) + "\n"
 
 
 def build_pr_title(
     decisions: list[Decision], updates: list[ActionUpdate]
 ) -> str:
-    return "Update GitHub Actions"
+    return _TITLE
 
 
 def build_pr_body(
