@@ -1,15 +1,11 @@
 # gh-external-audit
 
-Two subcommands for working with GitHub Actions across repositories:
+Audit and update external GitHub Action references (the `uses:` lines that
+pull in third-party code) in a repo's workflow files.
 
-- `org` — scan every repository in an organization for workflow files that pin
-  external GitHub Actions, then audit each unique action ref against a set of
-  checks. Writes a TSV problem report (one row per workflow use × problem) to
-  stdout. Today the only check flags JavaScript actions running on Node older
-  than version 24.
-- `repo` — scan a single repository's workflows and look up the latest release
-  for every external action they use. Writes a TSV update report (one row per
-  workflow use, with current ref and latest release info) to stdout.
+The main flow walks every outdated action with a `git add -p`-style prompt,
+lets you pick a pin style per use, edits the workflow YAML files, commits
+on a feature branch, and optionally opens a pull request via `gh`.
 
 ## Requirements
 
@@ -19,37 +15,108 @@ Two subcommands for working with GitHub Actions across repositories:
 
 ## Run
 
+### Interactive update of a single repo
+
 ```sh
-uv run gh-external-audit org ORG > report.tsv
-uv run gh-external-audit repo OWNER/REPO > updates.tsv
+uv run gh-external-audit update OWNER/REPO
 ```
 
-(Or equivalently `uv run python -m gh_external_audit ...`.)
+Sparse-clones the repo into `./working/OWNER/REPO/`, scans for outdated
+external action references, and prompts you per `(file, use)` with a
+`git add -p`-style menu:
 
-Flags common to both commands:
+- `m` / `M` — pin to the moving major-version tag (`m` = this occurrence
+  only; `M` = this and every remaining occurrence of the same `uses:` target)
+- `e` / `E` — pin to the latest exact release tag
+- `s` / `S` — pin to the immutable commit SHA
+- `n` / `N` — leave as is
+- `q` — quit, keeping decisions made so far
+- `?` — help
 
-- `--dry-run` print the planned configuration without calling GitHub
-- `--no-progress` suppress stderr progress logs and the tqdm bar
-- `--no-header` omit the TSV header row
-- `--log-level DEBUG` more verbose progress logging
+After the loop the tool stages the workflow files, commits on a
+`github-workflows-update/<date>` branch, shows a PR preview, and asks
+before running `gh pr create`.
 
-`org`-only flags:
+Use `--here` to operate on cwd (a clone you already have) instead of
+sparse-cloning; `OWNER/REPO` is inferred from `origin`. Use `--no-pr` to
+stop after committing locally.
 
-- `--repo-limit N` (or `REPO_LIMIT=N`) cap how many repos to scan
+### Non-interactive modes
 
-## Checks
+For scripts and agents:
 
-All checks live in `src/gh_external_audit/checks.py`. Each check is a
+- `update OWNER/REPO --emit > audit.tsv` — print a TSV of every external
+  action use with current pin, latest release, status. Nothing is edited.
+- `update OWNER/REPO --decisions FILE` — apply a JSON file of decisions
+  (one entry per outdated `(workflow_path, uses_target)` pair). Each
+  decision specifies a `choice` (`major` / `exact` / `sha` / `skip`) and
+  an optional `note` that surfaces in the commit message and PR body.
+
+Two Claude Code skills under `.claude/skills/` drive the emit-decide-apply
+loop end-to-end:
+
+- `gh-external-audit` — single-repo flow (asks pin preference once, reads
+  release notes per outdated action, builds a decisions file, applies, PRs)
+- `gh-external-audit-org` — same flow looped across every repo in a
+  GitHub organization, with rate-limit awareness and safe / needs-review
+  classification per repo before opening PRs
+
+### Legacy: org-wide Node-runtime audit
+
+```sh
+uv run gh-external-audit org ORG > report.tsv
+```
+
+Scans every repo in an organization, runs a set of per-action checks
+(currently just `check_node_runtime`, which flags JavaScript actions on
+Node older than v24), and writes a TSV problem report (one row per
+workflow use × problem). Predates the `update` flow and stays for its
+focused per-action check pipeline.
+
+## Flags
+
+`update`:
+
+- `--here` — operate on cwd; infer `OWNER/REPO` from `origin`
+- `--work-dir DIR` — where sparse clones live (default `./working/`)
+- `--force-reclone` — delete any existing clone before fetching
+- `--branch NAME` — override the feature-branch name
+- `--no-pr` — commit locally; skip `gh pr create`
+- `--emit` — data-only TSV mode
+- `--decisions FILE` — apply pre-computed decisions
+- `--header` / `--no-header` — TSV header toggle (for `--emit`)
+
+`org`:
+
+- `--repo-limit N` (or `REPO_LIMIT=N`) — cap how many repos to scan
+
+Common:
+
+- `--dry-run` — print the planned configuration without calling GitHub
+- `--progress` / `--no-progress` — stderr progress logs and the tqdm bar
+- `--log-level LEVEL` — more (or less) verbose progress logging
+
+## Adding org-audit checks
+
+All `org` checks live in `src/gh_external_audit/checks.py`. Each check is a
 function that takes a parsed `action.yml` (a `dict`) and yields zero or more
 `ProblemRecord(code, detail)` values. The full list is `ACTION_CHECKS`, and
 `audit_action` fans out over it.
 
 To add a new check:
 
-1. Write a function `check_my_thing(metadata: dict[str, Any]) -> Iterable[ProblemRecord]`
-   that yields one `ProblemRecord` per finding. `code` is the machine-readable
-   tag that lands in the `problem` TSV column; `detail` is an optional short
-   string for the `detail` column.
+1. Write `check_my_thing(metadata: dict[str, Any]) -> Iterable[ProblemRecord]`
+   that yields one `ProblemRecord` per finding. `code` is the
+   machine-readable tag that lands in the `problem` TSV column; `detail` is
+   an optional short string for the `detail` column.
 2. Append it to `ACTION_CHECKS`.
 
 See `check_node_runtime` for a worked example.
+
+## Design notes
+
+- `docs/update-command-design.md` — design history for the `update` command
+- `docs/agent-skill.md` — single-repo agent skill (also at
+  `.claude/skills/gh-external-audit/SKILL.md`)
+- `docs/agent-skill-org.md` — org-wide agent skill (also at
+  `.claude/skills/gh-external-audit-org/SKILL.md`)
