@@ -18,20 +18,19 @@ from .git_ops import (
     ensure_branch,
 )
 from .github import GitHubClient, require_gh
-from .models import Repo
 from .prompts import prompt_for_decisions
 from .report import write_problem_report_from_records
-from .scan import dedupe_scan_records, scan, scan_cloned_workflows, scan_repo_workflows
+from .scan import dedupe_scan_records, scan, scan_cloned_workflows
 from .update import find_action_updates, write_update_report
 
 
 app = typer.Typer(
     add_completion=False,
     help=(
-        "Scan GitHub Actions workflow files. "
-        "Use `org` to audit every repo in an organization, "
-        "`repo` to find action updates for a single repository, "
-        "or `update` to interactively update a repository's workflows."
+        "Audit external GitHub Action references in workflow files. "
+        "Use `update` to walk a repo's outdated actions interactively "
+        "(or `--emit` / `--decisions` non-interactively), and `org` for "
+        "the legacy organization-wide Node-runtime audit."
     ),
 )
 
@@ -107,63 +106,6 @@ def org_command(
             metadata_by_key,
             include_header=header,
         )
-    finally:
-        if progress:
-            logger.info("gh api calls: {}", client.api_call_count)
-
-
-@app.command(name="repo")
-def repo_command(
-    repo: str = typer.Argument(
-        ..., help="Target repository as OWNER/REPO (e.g. actions/checkout)."
-    ),
-    dry_run: bool = typer.Option(
-        False,
-        "--dry-run",
-        help="Print the planned configuration without calling GitHub.",
-    ),
-    progress: bool = typer.Option(
-        True,
-        "--progress/--no-progress",
-        help="Write progress logs to stderr.",
-    ),
-    log_level: str = typer.Option(
-        "INFO",
-        "--log-level",
-        help="Log level for stderr progress logs.",
-    ),
-    header: bool = typer.Option(
-        True,
-        "--header/--no-header",
-        help="Include a TSV header row.",
-    ),
-) -> None:
-    """Find available updates for every external action used in REPO's workflows."""
-    if "/" not in repo or repo.count("/") != 1 or not all(repo.split("/")):
-        raise typer.BadParameter("repo must be in OWNER/REPO format")
-
-    if dry_run:
-        typer.echo(f"repository: {repo}")
-        typer.echo(f"progress: {progress}")
-        typer.echo(f"log_level: {log_level.upper()}")
-        typer.echo("planned steps:")
-        typer.echo("  scan workflows")
-        typer.echo("  deduplicate action refs")
-        typer.echo("  fetch latest release per action repo")
-        typer.echo("  resolve current ref commit info per (repo, ref)")
-        typer.echo("  write update report")
-        return
-
-    setup_logging(progress, log_level)
-    require_gh()
-    client = GitHubClient()
-    try:
-        repo_obj = Repo(name_with_owner=repo, updated_at="", pushed_at="")
-        records = scan_repo_workflows(client, repo_obj)
-        updates = find_action_updates(client, records, progress)
-        if progress:
-            logger.info("computed {} action update rows", len(updates))
-        write_update_report(updates, include_header=header)
     finally:
         if progress:
             logger.info("gh api calls: {}", client.api_call_count)

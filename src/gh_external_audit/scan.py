@@ -234,28 +234,6 @@ def scan(
             )
 
 
-def scan_repo_workflows(
-    client: GitHubClient,
-    repo: Repo,
-) -> Iterable[UseRecord]:
-    """Scan one repository's workflows and yield uses of non-local actions."""
-    workflow_files = list_workflow_files(client, repo)
-    logger.debug(
-        "found {} workflow files in {}",
-        len(workflow_files),
-        repo.name_with_owner,
-    )
-
-    for workflow_file in workflow_files:
-        logger.debug(
-            "downloading {}:{}",
-            repo.name_with_owner,
-            workflow_file.path,
-        )
-        text = get_workflow_text(client, repo, workflow_file)
-        yield from parse_workflow(text, repo, workflow_file, should_skip_local)
-
-
 def scan_cloned_workflows(
     clone_path: Path,
     name_with_owner: str,
