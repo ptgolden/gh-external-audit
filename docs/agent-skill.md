@@ -165,17 +165,35 @@ For each outdated row, choose one of `major` / `exact` / `sha` / `skip`:
      `foo/bar` → `foo/bar/sub`).
 
 3. **Decide:**
-   - If the documentation describes breaking changes that affect what the
-     workflow uses, choose `skip` and surface a clear summary of what
-     changed and what the user would need to update.
+
+   When the documentation describes a breaking change that affects what the
+   workflow actually uses, **don't reflexively skip**. The workflow file is
+   in the local clone; you have file-editing tools. If the change is a
+   simple, mechanical fix to the `with:` block — a renamed input, a
+   removed flag with an obvious replacement, a defaulted-now parameter
+   that can be dropped — edit the YAML file directly *before* you run
+   `--decisions`, and apply the action update normally. The tool stages
+   everything under `.github/workflows/` when it commits, so your edits
+   land in the same commit as the version bump.
+
+   Use `skip` only when the change is genuinely non-trivial: a parameter
+   removed without replacement, semantic behavior change, action
+   restructured into a different shape. In those cases, write a clear
+   `note` on the decision (see step 5) explaining what the user would
+   need to migrate.
+
+   Other rules:
    - If the documentation is silent on anything the workflow uses (or
      confirms the invocation still works), apply the user's preference
      from step 1.
    - If you couldn't find *any* documentation (no release notes, no
      changelog, no README), choose `skip` — we have no signal at all.
+     Add a `note` saying "no release notes / changelog / README found
+     for the new version" so the user knows why.
    - If the current pin is `@main`, `@master`, or another branch name,
-     **flag it as a security risk** in your summary. Recommend pinning to
-     a release (use the user's preference for the target).
+     **flag it as a security risk**. Apply the user's preference for the
+     new pin, and add a `note` like "was tracking `main` branch; switched
+     to versioned pin" so the change reads correctly in the PR body.
    - If the current pin is already a SHA, prefer `sha` (don't downgrade
      security).
    - If the action publishes no moving major tag (`latest_major_tag` is
@@ -193,14 +211,33 @@ For each outdated row, choose one of `major` / `exact` / `sha` / `skip`:
   {
     "workflow_path": ".github/workflows/documentation.yaml",
     "uses_target": "actions/checkout@main",
-    "choice": "exact"
+    "choice": "exact",
+    "note": "was tracking `main` branch; switched to versioned pin"
+  },
+  {
+    "workflow_path": ".github/workflows/release.yaml",
+    "uses_target": "peter-evans/create-pull-request@v5",
+    "choice": "skip",
+    "note": "v8 dropped support for the `assignees` input this workflow uses; needs explicit migration"
   }
 ]
 ```
 
 Include one entry per `(workflow_path, uses_target)` pair from the TSV's
 outdated rows. `skip` decisions can be omitted, but including them
-explicitly makes the agent's reasoning auditable.
+explicitly with a `note` makes the agent's reasoning auditable and
+surfaces it in the commit message and PR body.
+
+**The `note` field is optional but worth using whenever there's context
+that isn't obvious from the bullet itself:**
+
+- For `skip` decisions, the `note` is required if you want the user to
+  see *why* this one was skipped — skips without notes are silent in the
+  commit message and PR body.
+- For `major`/`exact`/`sha` decisions, include a `note` if you also
+  edited the workflow's `with:` block (describe the rename/refactor),
+  if you bumped a branch pin to a versioned pin, or any other context
+  the user should see when reviewing the PR.
 
 ### 6. Apply
 
