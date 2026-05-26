@@ -72,51 +72,87 @@ _CHOICE_LABELS = {
 
 def summarize_changes(
     decisions: list[Decision], updates: list[ActionUpdate]
-) -> list[str]:
-    """Build a deduplicated bullet list summarizing the applied decisions.
+) -> tuple[list[str], list[str]]:
+    """Build deduplicated bullet lists summarizing the applied decisions.
 
-    One bullet per (uses_repo, current_ref, choice) tuple. Skip decisions are
-    omitted. SHA targets are abbreviated to 8 characters.
+    Returns (update_bullets, skip_bullets):
+    - `update_bullets`: one per (uses_repo, current_ref, choice) where
+      choice != skip. Includes the per-decision `note` inline if present.
+    - `skip_bullets`: one per (uses_repo, current_ref) where the decision
+      was `skip` *and* a note was given. Skips without notes are silent
+      (the agent had no reason to surface).
+
+    SHA targets in update bullets are abbreviated to 8 characters.
     """
     update_map = {(u.workflow_path, u.uses_target): u for u in updates}
-    seen: dict[tuple[str, str, str], str] = {}
+    updates_seen: dict[tuple[str, str, str], tuple[str, str]] = {}
+    skips_seen: dict[tuple[str, str], str] = {}
 
     for decision in decisions:
-        if decision.choice == CHOICE_SKIP:
-            continue
         update = update_map.get((decision.workflow_path, decision.uses_target))
         if update is None:
             continue
+
+        if decision.choice == CHOICE_SKIP:
+            if decision.note:
+                key = (update.uses_repo, update.current_ref)
+                skips_seen.setdefault(key, decision.note)
+            continue
+
         new_target = target_for_choice(update, decision.choice)
         if new_target is None:
             continue
         new_ref = new_target.rsplit("@", 1)[1]
         if decision.choice == CHOICE_SHA:
             new_ref = new_ref[:8]
-        key = (update.uses_repo, update.current_ref, decision.choice)
-        if key not in seen:
-            seen[key] = new_ref
+        key3 = (update.uses_repo, update.current_ref, decision.choice)
+        if key3 not in updates_seen:
+            updates_seen[key3] = (new_ref, decision.note)
 
-    bullets = []
-    for key in sorted(seen, key=lambda k: (k[0].lower(), k[1].lower())):
-        uses_repo, current_ref, choice = key
-        new_ref = seen[key]
+    update_bullets: list[str] = []
+    for key3 in sorted(updates_seen, key=lambda k: (k[0].lower(), k[1].lower())):
+        uses_repo, current_ref, choice = key3
+        new_ref, note = updates_seen[key3]
         kind = _CHOICE_LABELS.get(choice, choice)
-        bullets.append(f"- {uses_repo}: {current_ref} → {new_ref} ({kind})")
-    return bullets
+        line = f"- {uses_repo}: {current_ref} → {new_ref} ({kind})"
+        if note:
+            line += f" — {note}"
+        update_bullets.append(line)
+
+    skip_bullets: list[str] = []
+    for key2 in sorted(skips_seen, key=lambda k: (k[0].lower(), k[1].lower())):
+        uses_repo, current_ref = key2
+        note = skips_seen[key2]
+        skip_bullets.append(f"- {uses_repo}: {current_ref} (kept) — {note}")
+
+    return update_bullets, skip_bullets
 
 
 _TITLE = "Update external GitHub workflows"
+
+
+def _format_body(update_bullets: list[str], skip_bullets: list[str]) -> str:
+    """Render update + skip bullets into the shared body text."""
+    sections: list[str] = []
+    if update_bullets:
+        sections.append(
+            "Updates from `gh-external-audit update`:\n\n"
+            + "\n".join(update_bullets)
+        )
+    if skip_bullets:
+        sections.append("Not updated:\n\n" + "\n".join(skip_bullets))
+    return "\n\n".join(sections)
 
 
 def build_commit_message(
     decisions: list[Decision], updates: list[ActionUpdate]
 ) -> str:
     """Build the commit message body from the applied decisions."""
-    bullets = summarize_changes(decisions, updates)
-    if not bullets:
+    update_bullets, skip_bullets = summarize_changes(decisions, updates)
+    body = _format_body(update_bullets, skip_bullets)
+    if not body:
         return f"{_TITLE}\n"
-    return f"{_TITLE}\n\n" + "\n".join(bullets) + "\n"
+    return f"{_TITLE}\n\n{body}\n"
 
 
 def build_pr_title(
@@ -128,13 +164,9 @@ def build_pr_title(
 def build_pr_body(
     decisions: list[Decision], updates: list[ActionUpdate]
 ) -> str:
-    bullets = summarize_changes(decisions, updates)
-    if not bullets:
-        return "(no changes)"
-    return (
-        "Updates from `gh-external-audit update`:\n\n"
-        + "\n".join(bullets)
-    )
+    update_bullets, skip_bullets = summarize_changes(decisions, updates)
+    body = _format_body(update_bullets, skip_bullets)
+    return body or "(no changes)"
 
 
 def create_pr(clone_path: Path, title: str, body: str) -> int:

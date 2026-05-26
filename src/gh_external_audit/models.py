@@ -119,3 +119,4 @@ class Decision:
     workflow_path: str
     uses_target: str
     choice: str
+    note: str = ""

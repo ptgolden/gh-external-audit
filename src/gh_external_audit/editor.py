@@ -126,7 +126,8 @@ def load_decisions(path: Path) -> list[Decision]:
     """Read a JSON file of decision records.
 
     Expected shape: a JSON array of objects, each with `workflow_path`,
-    `uses_target`, and `choice` (one of major/exact/sha/skip).
+    `uses_target`, `choice` (one of major/exact/sha/skip), and an
+    optional `note` string surfaced in the commit message / PR body.
     """
     try:
         raw = path.read_text()
@@ -166,11 +167,18 @@ def load_decisions(path: Path) -> list[Decision]:
                 f"must be one of {sorted(CHOICES)}"
             )
 
+        note = entry.get("note", "")
+        if not isinstance(note, str):
+            raise typer.BadParameter(
+                f"decisions[{i}].note must be a string (got {type(note).__name__})"
+            )
+
         decisions.append(
             Decision(
                 workflow_path=str(workflow_path),
                 uses_target=str(uses_target),
                 choice=str(choice),
+                note=note,
             )
         )
 
