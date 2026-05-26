@@ -226,30 +226,67 @@ Summarize:
 
 ### 8. Offer to open the PR
 
-After the summary, show the user the exact `gh` command that would open
-a pull request and ask whether you should run it. Use the `--fill` form
-so the title and body come from the commit message the tool already
-generated (it's already templated as "Update external GitHub workflows"
-with a deduped bullet list):
+After the summary, walk the user through the plan for opening a PR
+and ask whether you should run it. `gh pr create --fill` will reuse the
+commit message's title and body (already templated as "Update external
+GitHub workflows" with a deduped bullet list).
 
-> Open a pull request? I'd run:
+**Important:** `gh pr create`'s docs say it'll prompt to push or fork
+when the branch isn't pushed yet — that prompt only fires in an
+interactive TTY. From an agent (no TTY), it errors out instead. So
+the agent has to push the branch (and fork if needed) explicitly
+before calling `gh pr create`.
+
+First check whether the user has write access to the upstream repo:
+
+```sh
+gh api /repos/OWNER/REPO --jq '.permissions.push // false'
+```
+
+Then describe the plan and ask. Two flows depending on the result:
+
+**a. Write access (`push == true`):**
+
+> Open a PR for OWNER/REPO? I'd run:
 >
 > ```
-> (cd working/OWNER/REPO && gh pr create --fill)
+> (cd working/OWNER/REPO && \
+>   git push -u origin BRANCH && \
+>   gh pr create --fill)
 > ```
 >
-> Reply "yes" and I'll run it; reply "no" and I'll stop here (you can
-> always run that command yourself later).
+> where BRANCH is the feature branch the tool created (default
+> `github-workflows-update/<date>`).
+>
+> Reply "yes" and I'll run it; "no" and the branch stays local.
 
-If the user confirms, run that exact command. `gh pr create` may prompt
-about forking if the user lacks write access to the upstream repo —
-that prompt won't work in a non-TTY context, so if the command fails
-that way, surface the error and tell the user to run it interactively
-themselves.
+**b. No write access (`push == false`):**
+
+> Open a PR for OWNER/REPO? You don't have write access, so I'd fork
+> first and PR from your fork:
+>
+> ```
+> cd working/OWNER/REPO
+> gh repo fork OWNER/REPO --remote --remote-name=fork
+> git push -u fork BRANCH
+> gh pr create --fill --head $(gh api /user --jq .login):BRANCH
+> ```
+>
+> Reply "yes" and I'll run it; "no" and the branch stays local.
+
+In the no-write case, `gh repo fork ... --remote --remote-name=fork`
+adds a `fork` remote pointing at your personal fork of the repo
+(creating the fork if it doesn't exist). The PR's `--head` form
+`USERNAME:BRANCH` tells `gh pr create` to source the PR head from the
+fork. The base is inferred from upstream's default branch.
+
+If the user confirms, run the planned commands sequentially. If any
+step fails (e.g. fork already exists with a divergent state, push is
+rejected, gh errors), surface the error verbatim and stop. Don't try
+to recover automatically.
 
 If the user declines, leave the branch and commit in place at
-`working/OWNER/REPO/` — the user can `gh pr create` later whenever they
-want.
+`working/OWNER/REPO/` — they can run the commands themselves later.
 
 ## Invocation preferences the user might pass
 
