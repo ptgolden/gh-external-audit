@@ -15,6 +15,13 @@ on a feature branch, and optionally opens a pull request via `gh`.
 
 ## Run
 
+### Try in Claude
+
+This tool has be designed to work well with Claude. After cloning this repository, open Claude code in the root directory, and try prompts like:
+
+* Update the external GitHub Action workflows in `monarch-initiative/mondo`
+* Update the external GitHub Action workflows in the `periodo` organization
+
 ### Interactive update of a single repo
 
 ```sh
